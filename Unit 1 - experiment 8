@@ -1,0 +1,100 @@
+import random
+
+# Grid parameters
+GRID_SIZE = 5
+START = (0, 0)
+DESTINATION = (4, 4)
+
+# Traffic lights
+traffic_lights = {
+    (1, 1): "GREEN",
+    (2, 3): "RED",
+    (3, 2): "GREEN"
+}
+
+ACTIONS = ["UP", "DOWN", "LEFT", "RIGHT", "STOP"]
+
+# Q-learning parameters
+alpha = 0.1      # learning rate
+gamma = 0.9      # discount factor
+epsilon = 0.2    # exploration rate
+episodes = 500
+
+# Initialize Q-table
+Q = {}
+
+def get_light(pos):
+    return traffic_lights.get(pos, "GREEN")
+
+def get_state(pos):
+    return (pos[0], pos[1], get_light(pos))
+
+def choose_action(state):
+    if random.random() < epsilon:
+        return random.choice(ACTIONS)
+    else:
+        q_values = [Q.get((state, a), 0) for a in ACTIONS]
+        return ACTIONS[q_values.index(max(q_values))]
+
+def move(pos, action):
+    x, y = pos
+
+    if action == "UP" and x > 0:
+        x -= 1
+    elif action == "DOWN" and x < GRID_SIZE - 1:
+        x += 1
+    elif action == "LEFT" and y > 0:
+        y -= 1
+    elif action == "RIGHT" and y < GRID_SIZE - 1:
+        y += 1
+
+    return (x, y)
+
+def get_reward(pos, action, new_pos):
+    if new_pos == DESTINATION:
+        return 100
+
+    light = get_light(pos)
+
+    if light == "RED" and action != "STOP":
+        return -10
+
+    if action == "STOP" and light == "RED":
+        return 2
+
+    if pos == new_pos and action != "STOP":
+        return -5
+
+    return -1
+
+# Training phase
+for episode in range(episodes):
+    position = START
+
+    while position != DESTINATION:
+        state = get_state(position)
+        action = choose_action(state)
+        new_position = move(position, action)
+        reward = get_reward(position, action, new_position)
+        new_state = get_state(new_position)
+
+        old_q = Q.get((state, action), 0)
+        future_q = max([Q.get((new_state, a), 0) for a in ACTIONS])
+
+        Q[(state, action)] = old_q + alpha * (reward + gamma * future_q - old_q)
+
+        position = new_position
+
+# Testing learned policy
+print("\nLearned Policy Execution:\n")
+position = START
+steps = 0
+
+while position != DESTINATION and steps < 30:
+    state = get_state(position)
+    action = choose_action(state)
+    position = move(position, action)
+    steps += 1
+    print(f"Step {steps}: Position {position}, Action {action}")
+
+print("\nDestination reached using RL!")
