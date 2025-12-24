@@ -1,0 +1,144 @@
+import numpy as np
+import gym
+from gym import spaces
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+# ------------------ ENVIRONMENT ------------------ #
+class TrafficSignalEnv(gym.Env):
+    def __init__(self):
+        super(TrafficSignalEnv, self).__init__()
+
+        # State: [Queue_NS, Queue_EW, Current_Phase]
+        self.observation_space = spaces.Box(
+            low=0, high=50, shape=(3,), dtype=np.float32
+        )
+
+        # Actions: 0 = Green NS, 1 = Green EW
+        self.action_space = spaces.Discrete(2)
+
+        self.reset()
+
+    def reset(self):
+        self.queue_NS = np.random.randint(5, 30)
+        self.queue_EW = np.random.randint(5, 30)
+        self.phase = np.random.randint(0, 2)
+        return np.array([self.queue_NS, self.queue_EW, self.phase], dtype=np.float32)
+
+    def step(self, action):
+        if action == 0:
+            self.queue_NS = max(0, self.queue_NS - np.random.randint(5, 10))
+            self.queue_EW += np.random.randint(1, 5)
+        else:
+            self.queue_EW = max(0, self.queue_EW - np.random.randint(5, 10))
+            self.queue_NS += np.random.randint(1, 5)
+
+        self.phase = action
+        reward = -(self.queue_NS + self.queue_EW)
+
+        next_state = np.array(
+            [self.queue_NS, self.queue_EW, self.phase], dtype=np.float32
+        )
+
+        done = False
+        return next_state, reward, done, {}
+
+# ------------------ ACTOR-CRITIC NETWORK ------------------ #
+class ActorCritic(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(ActorCritic, self).__init__()
+
+        self.actor = nn.Sequential(
+            nn.Linear(state_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_dim),
+            nn.Softmax(dim=-1)
+        )
+
+        self.critic = nn.Sequential(
+            nn.Linear(state_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+
+    def forward(self, state):
+        policy = self.actor(state)
+        value = self.critic(state)
+        return policy, value
+
+# ------------------ PPO AGENT ------------------ #
+class PPOAgent:
+    def __init__(self, state_dim, action_dim):
+        self.model = ActorCritic(state_dim, action_dim)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0003)
+        self.gamma = 0.99
+        self.eps_clip = 0.2
+
+    def select_action(self, state):
+        state = torch.FloatTensor(state)
+        probs, value = self.model(state)
+        dist = torch.distributions.Categorical(probs)
+        action = dist.sample()
+        return action.item(), dist.log_prob(action), value
+
+    def update(self, memory):
+        states, actions, rewards, log_probs, values = zip(*memory)
+
+        rewards = torch.tensor(rewards)
+        values = torch.squeeze(torch.stack(values))
+        log_probs = torch.stack(log_probs)
+
+        returns = []
+        G = 0
+        for r in reversed(rewards):
+            G = r + self.gamma * G
+            returns.insert(0, G)
+
+        returns = torch.tensor(returns)
+        advantages = returns - values.detach()
+
+        probs, new_values = self.model(torch.stack(states))
+        dist = torch.distributions.Categorical(probs)
+        new_log_probs = dist.log_prob(torch.tensor(actions))
+
+        ratio = torch.exp(new_log_probs - log_probs)
+        surr1 = ratio * advantages
+        surr2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
+
+        actor_loss = -torch.min(surr1, surr2).mean()
+        critic_loss = nn.MSELoss()(new_values.squeeze(), returns)
+        loss = actor_loss + 0.5 * critic_loss
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+# ------------------ TRAINING ------------------ #
+env = TrafficSignalEnv()
+agent = PPOAgent(state_dim=3, action_dim=2)
+
+episodes = 200
+
+for ep in range(episodes):
+    state = env.reset()
+    memory = []
+    total_reward = 0
+
+    for _ in range(50):
+        action, log_prob, value = agent.select_action(state)
+        next_state, reward, done, _ = env.step(action)
+
+        memory.append((
+            torch.FloatTensor(state),
+            action,
+            reward,
+            log_prob,
+            value
+        ))
+
+        state = next_state
+        total_reward += reward
+
+    agent.update(memory)
+    print(f"Episode {ep + 1} | Total Reward: {total_reward}")
