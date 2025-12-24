@@ -1,0 +1,197 @@
+
+
+import gym
+import random
+import numpy as np
+from collections import deque
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import matplotlib.pyplot as plt
+
+# -------------------------------
+# Hyperparameters
+# -------------------------------
+ENV_NAME = "CartPole-v1"
+EPISODES = 300
+GAMMA = 0.99
+LR = 0.001
+BATCH_SIZE = 64
+MEMORY_SIZE = 10000
+EPSILON_START = 1.0
+EPSILON_MIN = 0.01
+EPSILON_DECAY = 0.995
+TARGET_UPDATE = 10
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# -------------------------------
+# Replay Buffer
+# -------------------------------
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        state, action, reward, next_state, done = map(np.array, zip(*batch))
+        return state, action, reward, next_state, done
+
+    def __len__(self):
+        return len(self.buffer)
+
+# -------------------------------
+# Standard DQN Network
+# -------------------------------
+class StandardDQN(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(StandardDQN, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_dim)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+# -------------------------------
+# Dueling DQN Network
+# -------------------------------
+class DuelingDQN(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(DuelingDQN, self).__init__()
+
+        self.feature = nn.Sequential(
+            nn.Linear(state_dim, 128),
+            nn.ReLU()
+        )
+
+        self.value_stream = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
+
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, action_dim)
+        )
+
+    def forward(self, x):
+        features = self.feature(x)
+        value = self.value_stream(features)
+        advantage = self.advantage_stream(features)
+        q = value + advantage - advantage.mean(dim=1, keepdim=True)
+        return q
+
+# -------------------------------
+# Agent
+# -------------------------------
+class DQNAgent:
+    def __init__(self, state_dim, action_dim, dueling=False):
+        self.action_dim = action_dim
+        self.epsilon = EPSILON_START
+        self.memory = ReplayBuffer(MEMORY_SIZE)
+
+        if dueling:
+            self.policy_net = DuelingDQN(state_dim, action_dim).to(device)
+            self.target_net = DuelingDQN(state_dim, action_dim).to(device)
+        else:
+            self.policy_net = StandardDQN(state_dim, action_dim).to(device)
+            self.target_net = StandardDQN(state_dim, action_dim).to(device)
+
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=LR)
+
+    def act(self, state):
+        if random.random() < self.epsilon:
+            return random.randrange(self.action_dim)
+        state = torch.FloatTensor(state).unsqueeze(0).to(device)
+        with torch.no_grad():
+            return self.policy_net(state).argmax().item()
+
+    def train(self):
+        if len(self.memory) < BATCH_SIZE:
+            return
+
+        state, action, reward, next_state, done = self.memory.sample(BATCH_SIZE)
+
+        state = torch.FloatTensor(state).to(device)
+        next_state = torch.FloatTensor(next_state).to(device)
+        action = torch.LongTensor(action).unsqueeze(1).to(device)
+        reward = torch.FloatTensor(reward).to(device)
+        done = torch.FloatTensor(done).to(device)
+
+        q_values = self.policy_net(state).gather(1, action).squeeze()
+        next_q = self.target_net(next_state).max(1)[0]
+        target = reward + GAMMA * next_q * (1 - done)
+
+        loss = nn.MSELoss()(q_values, target.detach())
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        if self.epsilon > EPSILON_MIN:
+            self.epsilon *= EPSILON_DECAY
+
+# -------------------------------
+# Training Function
+# -------------------------------
+def train_agent(dueling=False):
+    env = gym.make(ENV_NAME)
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.n
+
+    agent = DQNAgent(state_dim, action_dim, dueling)
+    scores = []
+
+    for episode in range(EPISODES):
+        state, _ = env.reset()
+        total_reward = 0
+        done = False
+
+        while not done:
+            action = agent.act(state)
+            next_state, reward, done, _, _ = env.step(action)
+
+            agent.memory.push(state, action, reward, next_state, done)
+            agent.train()
+
+            state = next_state
+            total_reward += reward
+
+        scores.append(total_reward)
+
+        if episode % TARGET_UPDATE == 0:
+            agent.target_net.load_state_dict(agent.policy_net.state_dict())
+
+        if episode % 20 == 0:
+            print(f"{'Dueling' if dueling else 'Standard'} DQN | Episode {episode} | Reward: {total_reward}")
+
+    env.close()
+    return scores
+
+# -------------------------------
+# Main Execution
+# -------------------------------
+standard_scores = train_agent(dueling=False)
+dueling_scores = train_agent(dueling=True)
+
+# -------------------------------
+# Plot Results
+# -------------------------------
+plt.plot(standard_scores, label="Standard DQN")
+plt.plot(dueling_scores, label="Dueling DQN")
+plt.xlabel("Episodes")
+plt.ylabel("Reward")
+plt.title("Standard DQN vs Dueling DQN")
+plt.legend()
+plt.show()
