@@ -1,0 +1,94 @@
+import numpy as np
+import random
+
+# -------------------------------
+# Supply Chain Simulation Environment
+# -------------------------------
+class SupplyChainEnv:
+    def __init__(self):
+        # state variables
+        self.inventory = 100
+        self.max_inventory = 200
+        self.demand_mean = 20
+        self.transport_cost = 2
+        self.holding_cost = 1
+        self.stockout_cost = 5
+        self.step_count = 0
+
+    def reset(self):
+        self.inventory = 100
+        self.step_count = 0
+        return self.inventory
+
+    def step(self, action):
+        """
+        action: order quantity (0–50)
+        """
+        demand = np.random.poisson(self.demand_mean)
+
+        # inventory update
+        self.inventory += action
+        self.inventory -= demand
+
+        # costs
+        holding = max(self.inventory, 0) * self.holding_cost
+        stockout = abs(min(self.inventory, 0)) * self.stockout_cost
+        transport = action * self.transport_cost
+
+        reward = -(holding + stockout + transport)
+
+        # inventory bounds
+        self.inventory = np.clip(self.inventory, 0, self.max_inventory)
+
+        self.step_count += 1
+        done = self.step_count >= 30  # one episode = 30 days
+
+        return self.inventory, reward, done
+
+
+# -------------------------------
+# Policy Definitions
+# -------------------------------
+def random_policy(state):
+    return random.randint(0, 50)
+
+def reorder_point_policy(state, reorder_point=50, order_qty=40):
+    if state < reorder_point:
+        return order_qty
+    return 0
+
+
+# -------------------------------
+# Policy Evaluation
+# -------------------------------
+def evaluate_policy(env, policy, episodes=100):
+    total_rewards = []
+
+    for _ in range(episodes):
+        state = env.reset()
+        episode_reward = 0
+        done = False
+
+        while not done:
+            action = policy(state)
+            state, reward, done = env.step(action)
+            episode_reward += reward
+
+        total_rewards.append(episode_reward)
+
+    return np.mean(total_rewards)
+
+
+# -------------------------------
+# Run Simulation
+# -------------------------------
+env = SupplyChainEnv()
+
+random_policy_reward = evaluate_policy(env, random_policy)
+reorder_policy_reward = evaluate_policy(
+    env,
+    lambda s: reorder_point_policy(s, reorder_point=50, order_qty=40)
+)
+
+print("Average Reward (Random Policy):", random_policy_reward)
+print("Average Reward (Reorder Point Policy):", reorder_policy_reward)
