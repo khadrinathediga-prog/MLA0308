@@ -1,0 +1,103 @@
+import numpy as np
+import random
+
+# -------------------------------
+# Healthcare Environment
+# -------------------------------
+class HealthcareEnv:
+    def __init__(self):
+        self.max_patients = 10
+        self.max_beds = 5
+        self.reset()
+
+    def reset(self):
+        self.waiting_patients = random.randint(0, self.max_patients)
+        self.available_beds = random.randint(1, self.max_beds)
+        return (self.waiting_patients, self.available_beds)
+
+    def step(self, action):
+        reward = 0
+
+        # New patient arrival (stochastic)
+        arrivals = np.random.poisson(2)
+        self.waiting_patients = min(
+            self.waiting_patients + arrivals, self.max_patients
+        )
+
+        # Action: Admit or Delay
+        if action == 1 and self.waiting_patients > 0 and self.available_beds > 0:
+            self.waiting_patients -= 1
+            self.available_beds -= 1
+
+            # Treatment outcome
+            success = np.random.rand() < 0.8
+            reward += 10 if success else -5
+
+        # Costs
+        waiting_cost = self.waiting_patients * 2
+        resource_cost = (self.max_beds - self.available_beds) * 1
+
+        reward -= (waiting_cost + resource_cost)
+
+        # Bed release probability
+        if np.random.rand() < 0.3:
+            self.available_beds = min(self.available_beds + 1, self.max_beds)
+
+        next_state = (self.waiting_patients, self.available_beds)
+        done = False
+        return next_state, reward, done
+
+
+# -------------------------------
+# Q-Learning Agent
+# -------------------------------
+states = [(i, j) for i in range(11) for j in range(6)]
+actions = [0, 1]  # Delay, Admit
+
+Q = {s: np.zeros(len(actions)) for s in states}
+
+alpha = 0.1
+gamma = 0.95
+epsilon = 0.1
+
+def choose_action(state):
+    if random.random() < epsilon:
+        return random.choice(actions)
+    return np.argmax(Q[state])
+
+
+# -------------------------------
+# Training
+# -------------------------------
+env = HealthcareEnv()
+episodes = 500
+
+for _ in range(episodes):
+    state = env.reset()
+    for _ in range(30):  # one episode = 30 time steps
+        action = choose_action(state)
+        next_state, reward, done = env.step(action)
+
+        Q[state][action] += alpha * (
+            reward + gamma * np.max(Q[next_state]) - Q[state][action]
+        )
+
+        state = next_state
+
+
+# -------------------------------
+# Policy Evaluation
+# -------------------------------
+def evaluate_policy():
+    total_reward = 0
+    for _ in range(50):
+        state = env.reset()
+        episode_reward = 0
+        for _ in range(30):
+            action = np.argmax(Q[state])
+            state, reward, _ = env.step(action)
+            episode_reward += reward
+        total_reward += episode_reward
+    return total_reward / 50
+
+print("Average Reward after Training:", evaluate_policy())
